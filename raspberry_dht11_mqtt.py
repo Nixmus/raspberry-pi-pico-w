@@ -5,6 +5,7 @@ import network
 import time
 from umqtt.simple import MQTTClient
 from ssd1306 import SSD1306_I2C
+import gc  # Para gestión de memoria
 
 # === CONFIG WIFI ===
 wifi_ssid = "pocox6"
@@ -49,66 +50,167 @@ def blink_led(times=1):
         led_onboard.off()
         sleep(0.1)
 
-def connect_wifi():
-    display_message("Conectando WiFi", wifi_ssid, "Pico W iniciando")
+def init_wifi_module():
+    """Inicializar módulo WiFi con tiempo de espera adecuado"""
+    print("Inicializando módulo WiFi...")
+    display_message("Iniciando...", "Modulo WiFi", "Esperando", "sistema...")
     
+    # Esperar a que el sistema se estabilice
+    sleep(3)
+    
+    # Desactivar WiFi primero para reset completo
     wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    wlan.connect(wifi_ssid, wifi_password)
-
-    timeout = 0
-    while not wlan.isconnected() and timeout < 20:
-        print('Connecting to WiFi...')
-        blink_led(1)
-        time.sleep(1)
-        timeout += 1
-
-    if wlan.isconnected():
-        ip = wlan.ifconfig()[0]
-        print("✓ Connected to WiFi:", ip)
-        
-        display_message("WiFi Conectado", wifi_ssid, "IP:", ip)
-        blink_led(3)  # 3 parpadeos = WiFi OK
-        sleep(3)
-        return True
-    else:
-        print("✗ WiFi connection failed")
-        display_message("WiFi ERROR", "Timeout", "Check network", "Restarting...")
-        return False
-
-def connect_mqtt():
-    display_message("Conectando MQTT", mqtt_host, "Puerto: " + str(mqtt_port))
+    wlan.active(False)
+    sleep(2)
     
-    try:
-        client = MQTTClient(
-            client_id=mqtt_client_id,
-            server=mqtt_host,
-            port=mqtt_port
-        )
-        client.connect()
-        print("✓ Connected to MQTT broker")
-        
-        display_message("Conexiones OK", "WiFi: Conectado", "MQTT: Conectado", "Iniciando...")
-        blink_led(5)  # 5 parpadeos = Todo OK
-        sleep(3)
-        
-        return client
-    except Exception as e:
-        print("✗ MQTT connection error:", e)
-        error_msg = str(e)[:16]  # Limitar mensaje de error
-        display_message("WiFi: OK", "MQTT: ERROR", error_msg, "Reintentando...")
-        sleep(3)
+    # Activar WiFi
+    wlan.active(True)
+    sleep(2)
+    
+    # Verificar que el módulo WiFi esté listo
+    timeout = 0
+    while not wlan.active() and timeout < 10:
+        print("Esperando módulo WiFi...")
+        blink_led(1)
+        sleep(1)
+        timeout += 1
+    
+    if wlan.active():
+        print("✓ Módulo WiFi inicializado correctamente")
+        return wlan
+    else:
+        print("✗ Error inicializando módulo WiFi")
+        display_message("ERROR WiFi", "Modulo no", "responde", "Reiniciar Pico")
         return None
 
+def connect_wifi():
+    """Conectar a WiFi con reintentos mejorados"""
+    display_message("Conectando WiFi", wifi_ssid, "Preparando...", "")
+    
+    # Inicializar módulo WiFi primero
+    wlan = init_wifi_module()
+    if not wlan:
+        return False
+    
+    # Configurar modo estación si no está configurado
+    if not wlan.active():
+        wlan.active(True)
+        sleep(2)
+    
+    # Limpiar memoria antes de conectar
+    gc.collect()
+    
+    # Intentar conexión con múltiples reintentos
+    max_attempts = 3
+    
+    for attempt in range(max_attempts):
+        print(f"Intento de conexión WiFi {attempt + 1}/{max_attempts}")
+        display_message("WiFi Intent {}".format(attempt + 1), wifi_ssid, "Conectando...", "")
+        
+        try:
+            # Desconectar si ya está conectado
+            if wlan.isconnected():
+                wlan.disconnect()
+                sleep(2)
+            
+            # Intentar conexión
+            wlan.connect(wifi_ssid, wifi_password)
+            
+            # Esperar conexión con timeout más largo
+            timeout = 0
+            while not wlan.isconnected() and timeout < 30:
+                print('Connecting to WiFi... ({}/30)'.format(timeout + 1))
+                blink_led(1)
+                sleep(1)
+                timeout += 1
+                
+                # Mostrar progreso en pantalla
+                if timeout % 5 == 0:
+                    display_message("WiFi Intent {}".format(attempt + 1), wifi_ssid, "Tiempo: {}s".format(timeout), "Esperando...")
+
+            if wlan.isconnected():
+                ip = wlan.ifconfig()[0]
+                print("✓ Connected to WiFi:", ip)
+                
+                display_message("WiFi Conectado", wifi_ssid, "IP:", ip)
+                blink_led(3)  # 3 parpadeos = WiFi OK
+                sleep(3)
+                return True
+            else:
+                print(f"✗ WiFi connection failed - Attempt {attempt + 1}")
+                display_message("Intent {} fallo".format(attempt + 1), "Reintentando", "en 5 segundos", "")
+                sleep(5)
+                
+        except Exception as e:
+            print(f"WiFi connection error attempt {attempt + 1}: {e}")
+            display_message("Error WiFi", "Intent {}".format(attempt + 1), str(e)[:16], "Reintentando...")
+            sleep(5)
+    
+    # Si llegamos aquí, todos los intentos fallaron
+    print("✗ All WiFi connection attempts failed")
+    display_message("WiFi ERROR", "Todos intentos", "fallaron", "Check config")
+    return False
+
+def connect_mqtt():
+    """Conectar a MQTT con manejo de errores mejorado"""
+    display_message("Conectando MQTT", mqtt_host, "Puerto: " + str(mqtt_port), "")
+    
+    max_attempts = 3
+    
+    for attempt in range(max_attempts):
+        try:
+            print(f"Intento MQTT {attempt + 1}/{max_attempts}")
+            display_message("MQTT Intent {}".format(attempt + 1), mqtt_host, "Puerto: {}".format(mqtt_port), "Conectando...")
+            
+            client = MQTTClient(
+                client_id=mqtt_client_id,
+                server=mqtt_host,
+                port=mqtt_port
+            )
+            client.connect()
+            print("✓ Connected to MQTT broker")
+            
+            display_message("Conexiones OK", "WiFi: Conectado", "MQTT: Conectado", "Iniciando...")
+            blink_led(5)  # 5 parpadeos = Todo OK
+            sleep(3)
+            
+            return client
+            
+        except Exception as e:
+            print(f"✗ MQTT connection error attempt {attempt + 1}: {e}")
+            error_msg = str(e)[:16]  # Limitar mensaje de error
+            display_message("MQTT Intent {}".format(attempt + 1), "ERROR:", error_msg, "Reintentando...")
+            sleep(5)
+    
+    # Si llegamos aquí, todos los intentos fallaron
+    print("✗ All MQTT connection attempts failed")
+    display_message("MQTT ERROR", "Todos intentos", "fallaron", "Check broker")
+    return None
+
 def read_sensor():
-    try:
-        sensor.measure()
-        temp = sensor.temperature()
-        hum = sensor.humidity()
-        return temp, hum
-    except Exception as e:
-        print("✗ DHT11 sensor error:", e)
-        return None, None
+    """Leer sensor con reintentos"""
+    max_attempts = 3
+    
+    for attempt in range(max_attempts):
+        try:
+            sensor.measure()
+            temp = sensor.temperature()
+            hum = sensor.humidity()
+            
+            # Validar datos
+            if temp is not None and hum is not None and temp > -40 and temp < 80 and hum >= 0 and hum <= 100:
+                return temp, hum
+            else:
+                print(f"Datos inválidos del sensor: T={temp}, H={hum}")
+                if attempt < max_attempts - 1:
+                    sleep(1)
+                    
+        except Exception as e:
+            print(f"✗ DHT11 sensor error attempt {attempt + 1}: {e}")
+            if attempt < max_attempts - 1:
+                sleep(2)
+    
+    return None, None
 
 def display_sensor_data(temp, hum, counter, status="OK"):
     """Mostrar datos del sensor en formato optimizado para OLED"""
@@ -120,14 +222,40 @@ def display_sensor_data(temp, hum, counter, status="OK"):
     )
 
 def main():
-    # Mostrar mensaje de inicio
-    display_message("DHT11 + MQTT", "Raspberry Pico W", "Sensor Station", "v1.0")
-    blink_led(2)
-    sleep(3)
+    """Función principal con inicialización robusta"""
+    print("=== INICIO SISTEMA DHT11 + MQTT ===")
     
-    # Conectar WiFi
-    if not connect_wifi():
-        return
+    # Espera inicial para estabilización del sistema
+    print("Esperando estabilización del sistema...")
+    display_message("DHT11 + MQTT", "Raspberry Pico W", "Inicializando", "v1.1")
+    
+    # Espera más larga al inicio para que el sistema se estabilice
+    for i in range(5, 0, -1):
+        display_message("DHT11 + MQTT", "Raspberry Pico W", "Inicio en: {}s".format(i), "v1.1")
+        blink_led(1)
+        sleep(1)
+    
+    # Limpiar memoria
+    gc.collect()
+    
+    # Conectar WiFi con reintentos
+    wifi_connected = False
+    for wifi_attempt in range(3):
+        print(f"=== INTENTO GENERAL WiFi {wifi_attempt + 1}/3 ===")
+        if connect_wifi():
+            wifi_connected = True
+            break
+        else:
+            print(f"Fallo general WiFi intento {wifi_attempt + 1}")
+            display_message("WiFi Fallo", "Intent general {}".format(wifi_attempt + 1), "Esperando 10s", "antes reintento")
+            sleep(10)
+    
+    if not wifi_connected:
+        print("✗ No se pudo establecer conexión WiFi después de todos los intentos")
+        display_message("ERROR CRITICO", "WiFi no conecta", "Check SSID/PASS", "Reiniciar Pico")
+        while True:
+            blink_led(10)  # Parpadeo de error
+            sleep(5)
     
     # Conectar MQTT
     mqtt_client = connect_mqtt()
@@ -144,11 +272,15 @@ def main():
         error_count = 0
         
         while True:
+            # Limpiar memoria periódicamente
+            if counter % 10 == 0:
+                gc.collect()
+            
             # Leer sensor
             temp, hum = read_sensor()
             
             if temp is not None and hum is not None:
-                payload = '{{"temperature": {:.1f}, "humidity": {:.1f}, "device": "picow_dht11"}}'.format(temp, hum)
+                payload = '{{"temperature": {:.1f}, "humidity": {:.1f}, "device": "picow_dht11", "counter": {}}}'.format(temp, hum, counter)
                 
                 try:
                     # Publicar a MQTT
@@ -170,7 +302,7 @@ def main():
                     display_sensor_data(temp, hum, counter, "MQTT ERR")
                     
                     # Si hay muchos errores MQTT, intentar reconectar
-                    if error_count > 5:
+                    if error_count > 3:
                         print("Too many MQTT errors, reconnecting...")
                         try:
                             mqtt_client.disconnect()
@@ -179,7 +311,7 @@ def main():
                         
                         mqtt_client = connect_mqtt()
                         if not mqtt_client:
-                            display_message("MQTT perdido", "Reintentando...", "Check broker", "Error: " + str(error_count))
+                            display_message("MQTT perdido", "Reintentando...", "Check broker", "Error: {}".format(error_count))
                             sleep(10)
                             continue
                         error_count = 0

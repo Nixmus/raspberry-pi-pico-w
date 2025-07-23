@@ -30,9 +30,27 @@ sensor = dht.DHT11(Pin(4))  # DHT11 en GPIO4
 led_onboard = Pin("LED", Pin.OUT)
 ldr = ADC(Pin(26))  # LDR en GP26 (ADC0)
 
+# === CONFIG DAVIS 6450 ===
+davis_signal = ADC(Pin(27))  # Cable verde en GP27
+davis_enabled = True
+
+# Constantes del sensor Davis 6450
+MAX_IRRADIANCE = 1800  # W/m²
+SENSITIVITY = 0.00167  # V por W/m² (1.67 mV/W/m²)
+ADC_MAX = 65535
+VREF = 3.3
+
 # Configuración LDR con valores fijos
 MIN_LDR = 27000  # Valor mínimo fijo
 MAX_LDR = 65000  # Valor máximo fijo
+
+# Datos globales del sensor Davis
+davis_data = {
+    'irradiance': 0,
+    'voltage': 0,
+    'light_class': 'Unknown',
+    'status': 'Unknown'
+}
 
 def serial_print(payload):
     """Función para enviar mensajes por serial (solo consola)"""
@@ -82,6 +100,91 @@ def read_luminosity(samples=5, delay=0.1):
     lum_percent = map_value(avg, MIN_LDR, MAX_LDR, 0, 100)
     
     return lum_percent, int(avg)
+
+# === FUNCIONES DAVIS 6450 ===
+def voltage_to_irradiance(voltage):
+    """Convertir voltaje a irradiancia"""
+    if voltage < 0.005:  # Umbral mínimo
+        return 0.0
+    irradiance = voltage / SENSITIVITY
+    return min(irradiance, MAX_IRRADIANCE)
+
+def classify_light(irradiance):
+    """Clasificar nivel de luz"""
+    if irradiance < 10: return "Noche"
+    elif irradiance < 150: return "Bajo"
+    elif irradiance < 600: return "Medio"
+    elif irradiance < 1200: return "Alto"
+    else: return "Extremo"
+
+def get_sensor_status(voltage, irradiance):
+    """Estado del sensor"""
+    if voltage < 0.001: return "Sin_señal"
+    elif voltage > 3.1: return "Saturado"
+    elif irradiance > MAX_IRRADIANCE: return "Fuera_rango"
+    else: return "OK"
+
+def init_davis():
+    """Inicializar sensor Davis 6450"""
+    if not davis_enabled:
+        serial_print("Davis 6450 desactivado")
+        return False
+    
+    try:
+        # Prueba de lectura
+        raw = davis_signal.read_u16()
+        voltage = (raw / ADC_MAX) * VREF
+        irradiance = voltage_to_irradiance(voltage)
+        
+        serial_print(f"Davis 6450 inicializado: {irradiance:.1f} W/m²")
+        display_message("Davis 6450", "Inicializado", f"{irradiance:.1f} W/m²", "Sensor OK")
+        sleep(2)
+        return True
+        
+    except Exception as e:
+        serial_print(f"Error Davis 6450: {e}")
+        display_message("Davis 6450", "ERROR", str(e)[:16], "Check sensor")
+        sleep(2)
+        return False
+
+def read_davis(samples=5):
+    """Leer sensor Davis con promedio de muestras"""
+    if not davis_enabled:
+        return None, None, None, None
+    
+    try:
+        total = 0
+        for _ in range(samples):
+            total += davis_signal.read_u16()
+            time.sleep(0.01)
+        
+        raw = total / samples
+        voltage = (raw / ADC_MAX) * VREF
+        irradiance = voltage_to_irradiance(voltage)
+        light_class = classify_light(irradiance)
+        status = get_sensor_status(voltage, irradiance)
+        
+        return voltage, irradiance, light_class, status
+        
+    except Exception as e:
+        serial_print(f"Error leyendo Davis: {e}")
+        return None, None, None, None
+
+def update_davis_data():
+    """Actualizar datos del sensor Davis"""
+    global davis_data
+    
+    voltage, irradiance, light_class, status = read_davis()
+    
+    if voltage is not None:
+        davis_data.update({
+            'voltage': round(voltage, 4),
+            'irradiance': round(irradiance, 1),
+            'light_class': light_class,
+            'status': status
+        })
+        return True
+    return False
 
 def display_message(line1="", line2="", line3="", line4="", clear=True):
     """Función para mostrar mensajes en la OLED"""
@@ -200,7 +303,7 @@ def connect_mqtt():
     return None
 
 def read_sensor():
-    """Leer sensor con reintentos"""
+    """Leer sensor DHT11 con reintentos"""
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
@@ -219,35 +322,32 @@ def read_sensor():
                 sleep(2)
     return None, None
 
-def display_sensor_data(temp, hum, lum, counter, status="OK", ldr_raw=None):
+def display_sensor_data(temp, hum, lum, irradiance, counter, status="OK"):
     """Mostrar datos del sensor en formato optimizado para OLED"""
-    if ldr_raw is not None:
-        display_message(
-            "T:{:.1f}C H:{:.1f}%".format(temp, hum),
-            "Luz:{}% R:{}".format(lum, ldr_raw),
-            "Env:{} St:{}".format(counter, status),
-            "Pico W Sensor"
-        )
-    else:
-        display_message(
-            "T:{:.1f}C H:{:.1f}%".format(temp, hum),
-            "Luz:{}%".format(lum),
-            "Env:{} St:{}".format(counter, status),
-            "Pico W Sensor"
-        )
+    display_message(
+        "T:{:.1f}C H:{:.1f}%".format(temp, hum),
+        "LDR:{}% Sol:{:.0f}".format(lum, irradiance),
+        "Env:{} St:{}".format(counter, status),
+        "Pico W 3Sens"
+    )
 
 def main():
     """Función principal con inicialización robusta"""
-    serial_print("=== INICIO SISTEMA DHT11 + LDR + MQTT ===")
-    display_message("DHT11 + LDR + MQTT", "Raspberry Pico W", "Inicializando", "v1.4")
+    serial_print("=== INICIO SISTEMA DHT11 + LDR + DAVIS 6450 + MQTT ===")
+    display_message("DHT11+LDR+DAVIS", "Raspberry Pico W", "Inicializando", "v2.0")
     
     for i in range(5, 0, -1):
-        display_message("DHT11 + LDR + MQTT", "Raspberry Pico W", "Inicio en: {}s".format(i), "v1.4")
+        display_message("DHT11+LDR+DAVIS", "Raspberry Pico W", "Inicio en: {}s".format(i), "v2.0")
         blink_led(1)
         sleep(1)
     
-    # Mostrar configuración LDR en lugar de calibrar
+    # Mostrar configuración LDR
     show_ldr_config()
+    
+    # Inicializar sensor Davis 6450
+    davis_ok = init_davis()
+    if not davis_ok:
+        serial_print("⚠️ Davis 6450 no disponible, continuando sin él")
     
     gc.collect()
     
@@ -290,9 +390,31 @@ def main():
             temp, hum = read_sensor()
             lum, raw_lum = read_luminosity()
             
+            # Actualizar datos Davis 6450
+            davis_ok = update_davis_data()
+            
             if temp is not None and hum is not None:
-                payload = '{{"temperature": {:.1f}, "humidity": {:.1f}, "luminosity_percent": {}, "luminosity_raw": {}, "device": "picow_dht11_ldr", "counter": {}}}'.format(
-                    temp, hum, lum, raw_lum, counter)
+                # Crear payload base
+                payload_dict = {
+                    "temperature": round(temp, 1),
+                    "humidity": round(hum, 1),
+                    "luminosity_percent": lum,
+                    "luminosity_raw": raw_lum,
+                    "device": "picow_dht11_ldr_davis",
+                    "counter": counter
+                }
+                
+                # Agregar datos Davis si están disponibles
+                if davis_ok and davis_data['irradiance'] > 0:
+                    payload_dict.update({
+                        "solar_irradiance": davis_data['irradiance'],
+                        "solar_voltage": davis_data['voltage'],
+                        "solar_class": davis_data['light_class'],
+                        "solar_status": davis_data['status']
+                    })
+                
+                # Convertir a JSON string
+                payload = str(payload_dict).replace("'", '"')
                 
                 try:
                     mqtt_client.publish(mqtt_topic, payload)
@@ -303,19 +425,23 @@ def main():
                     # Todo lo demás por consola serial
                     serial_print("Published: " + payload)
                     serial_print(f"LDR Debug - Raw: {raw_lum}, Percent: {lum}%")
+                    if davis_ok:
+                        serial_print(f"Davis Debug - Irr: {davis_data['irradiance']} W/m², Class: {davis_data['light_class']}, Status: {davis_data['status']}")
                     
                     counter += 1
                     error_count = 0
                     
                     # Mostrar datos en OLED
-                    display_sensor_data(temp, hum, lum, counter, "OK", raw_lum)
+                    irradiance_display = davis_data['irradiance'] if davis_ok else 0
+                    display_sensor_data(temp, hum, lum, irradiance_display, counter, "OK")
                     
                     blink_led(1)
                     
                 except Exception as e:
                     serial_print("MQTT publish error: " + str(e))
                     error_count += 1
-                    display_sensor_data(temp, hum, lum, counter, "MQTT ERR", raw_lum)
+                    irradiance_display = davis_data['irradiance'] if davis_ok else 0
+                    display_sensor_data(temp, hum, lum, irradiance_display, counter, "MQTT_ERR")
                     if error_count > 3:
                         serial_print("Too many MQTT errors, reconnecting...")
                         try:

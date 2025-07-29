@@ -16,10 +16,8 @@ oled = SSD1306_I2C(128, 64, i2c)
 # === CONFIG SENSORES ===
 sensor = dht.DHT11(Pin(4))  # DHT11 en GPIO4
 led_onboard = Pin("LED", Pin.OUT)
-ldr = ADC(Pin(26))  # LDR en GP26 (ADC0)
-
-# === CONFIG DAVIS 6450 ===
-davis_signal = ADC(Pin(27))  # Cable verde del Davis 6450 en GP27
+ldr = ADC(Pin(27))  # LDR en GP27 (ADC1) - INTERCAMBIADO
+davis_signal = ADC(Pin(26))  # Cable verde del Davis 6450 en GP26 (ADC0) - INTERCAMBIADO
 davis_enabled = True
 
 # Configuración LDR con valores fijos
@@ -57,9 +55,9 @@ def uart_send_payload(payload):
 
 def show_sensor_config():
     """Mostrar configuración de sensores"""
-    serial_print(f"LDR configurado: MIN={MIN_LDR}, MAX={MAX_LDR}")
-    serial_print(f"Davis 6450: {'Habilitado' if davis_enabled else 'Deshabilitado'}")
-    display_message("Sensor Config", f"LDR: {MIN_LDR}-{MAX_LDR}", f"Davis: {'ON' if davis_enabled else 'OFF'}", "Configurado")
+    serial_print(f"LDR configurado en GP27: MIN={MIN_LDR}, MAX={MAX_LDR}")
+    serial_print(f"Davis 6450 en GP26: {'Habilitado' if davis_enabled else 'Deshabilitado'}")
+    display_message("Sensor Config", f"LDR: GP27", f"Davis: GP26", "Configurado")
     sleep(2)
 
 def map_value(x, in_min, in_max, out_min, out_max):
@@ -125,7 +123,7 @@ def init_davis():
         voltage = (raw / ADC_MAX) * VREF
         irradiance = voltage_to_irradiance(voltage)
         
-        serial_print(f"Davis 6450 inicializado: {irradiance:.1f} W/m²")
+        serial_print(f"Davis 6450 inicializado en GP26: {irradiance:.1f} W/m²")
         return True
         
     except Exception as e:
@@ -264,22 +262,23 @@ def test_all_sensors():
     
     # Test LDR
     lum, raw_lum = read_luminosity()
-    serial_print(f"LDR: {lum}% (Raw: {raw_lum})")
+    serial_print(f"LDR (GP27): {lum}% (Raw: {raw_lum})")
     
     # Test Davis 6450
     if davis_enabled:
         voltage, irradiance, light_class, status = read_davis()
         if voltage is not None:
-            serial_print(f"Davis: {irradiance:.1f} W/m² ({light_class}) - {status}")
+            serial_print(f"Davis (GP26): {irradiance:.1f} W/m² ({light_class}) - {status}")
         else:
-            serial_print("Davis: Error")
+            serial_print("Davis (GP26): Error")
     
     sleep(2)
 
 def main():
     """Función principal con triple sensor"""
     serial_print("=== INICIO SISTEMA TRIPLE SENSOR (DHT11 + LDR + DAVIS 6450) ===")
-    display_message("Triple Sensor", "DHT11+LDR+Davis", "Raspberry Pico W", "v2.0")
+    serial_print("=== CONFIGURACIÓN ADC INTERCAMBIADA: LDR->GP27, DAVIS->GP26 ===")
+    display_message("Triple Sensor", "DHT11+LDR+Davis", "ADC Intercambiado", "v2.0")
     
     for i in range(5, 0, -1):
         display_message("Triple Sensor", "Raspberry Pico W", "Inicio en: {}s".format(i), "v2.0")
@@ -292,7 +291,7 @@ def main():
     # Inicializar Davis 6450
     davis_ready = init_davis()
     if davis_ready:
-        display_message("Davis 6450", "Inicializado", "Sensor OK", "Continuando...")
+        display_message("Davis 6450", "GP26 Inicializado", "Sensor OK", "Continuando...")
     else:
         display_message("Davis 6450", "Error/Desactivado", "Solo DHT11+LDR", "Continuando...")
     sleep(2)
@@ -330,11 +329,11 @@ def main():
                 # Información detallada por consola serial
                 serial_print("=== Datos Combined ===")
                 serial_print(f"DHT11 - T: {temp}°C, H: {hum}%")
-                serial_print(f"LDR - Percent: {lum}%, Raw: {raw_lum}")
+                serial_print(f"LDR (GP27) - Percent: {lum}%, Raw: {raw_lum}")
                 if davis_success:
-                    serial_print(f"Davis - Irr: {davis_data['irradiance']} W/m², Class: {davis_data['light_class']}, Status: {davis_data['status']}")
+                    serial_print(f"Davis (GP26) - Irr: {davis_data['irradiance']} W/m², Class: {davis_data['light_class']}, Status: {davis_data['status']}")
                 else:
-                    serial_print("Davis - No data/Error")
+                    serial_print("Davis (GP26) - No data/Error")
                 serial_print(f"Payload: {payload}")
                 serial_print("=" * 30)
                 
